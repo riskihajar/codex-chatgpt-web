@@ -131,6 +131,25 @@ const CHATGPT_SMOKE_EXPECTED = "CODEX WEB GPT READY";
 export const CHATGPT_UI_SETTLE_MS = 250;
 export const CHATGPT_SEND_ENABLE_GRACE_MS = 5_000;
 
+/** A native tool row without a matching broker delivery proves the browser silently dropped it. */
+export function chatGptHasUndeliveredNativeTool(
+  nativeToolCallCount: number,
+  deliveredToolCallCount: number,
+): boolean {
+  return Number.isSafeInteger(nativeToolCallCount)
+    && Number.isSafeInteger(deliveredToolCallCount)
+    && nativeToolCallCount > deliveredToolCallCount;
+}
+
+/** Fallback for ChatGPT variants that remove native-tool DOM identity before it can be observed. */
+export function chatGptReportsUndeliveredNativeTool(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!/(?:codex native|akses native|(?:backend|terminal).{0,80}codex|workspace.{0,80}(?:lokal|local).{0,80}codex|(?:akses|repo).{0,80}(?:lokal|local)|codex.{0,80}(?:lokal|local|workspace))/i.test(normalized)) return false;
+  return /(?:gagal|failed|ditolak|rejected)/i.test(normalized)
+    || /(?:token|session|sesi)[^.\n]{0,120}(?:expired|invalid|revoked|tidak valid|kedaluwarsa)/i.test(normalized)
+    || /(?:no tool response|tool response.{0,40}(?:missing|unavailable|tidak tersedia))/i.test(normalized);
+}
+
 const CHATGPT_DOM_REVISION_ATTRIBUTES = [
   "aria-hidden",
   "aria-label",
@@ -1558,6 +1577,7 @@ interface ChatGptResponseDomSnapshot {
   markdownSegments: ChatGptMarkdownSegment[];
   completionActionVisible: boolean;
   stoppedThinkingVisible: boolean;
+  nativeToolCallCount: number;
   traceBlocks: ChatGptVisibleTraceBlock[];
 }
 
@@ -1575,6 +1595,7 @@ const absentResponseDomSnapshot = (): ChatGptResponseDomSnapshot => ({
   markdownSegments: [],
   completionActionVisible: false,
   stoppedThinkingVisible: false,
+  nativeToolCallCount: 0,
   traceBlocks: [],
 });
 
@@ -3970,6 +3991,11 @@ export class ChatGptBrowserWorker {
         }
         return false;
       })();
+      const nativeToolCallCount = new Set(
+        [...root.querySelectorAll<HTMLElement>('[data-testid="cot-v5-native-tool-icon"]')]
+          .map(icon => icon.closest<HTMLElement>('.group\\/tool-message'))
+          .filter((row): row is HTMLElement => row !== null),
+      ).size;
       return {
         key: observerKey,
         snapshot: {
@@ -3979,6 +4005,7 @@ export class ChatGptBrowserWorker {
           markdownSegments,
           completionActionVisible: completionAction !== undefined,
           stoppedThinkingVisible,
+          nativeToolCallCount,
           traceBlocks,
         },
       };
@@ -4620,6 +4647,8 @@ export class ChatGptBrowserWorker {
       let sawRunning = false;
       let loggedCompletionWait = false;
       let capturedResponse = false;
+      let observedNativeToolCallCount = 0;
+      let nativeDeliveryFailureObserved = false;
       const sentAt = Date.now();
       const visibleTrace = new ChatGptVisibleTraceTracker();
       const markdownBuffer = new ChatGptMarkdownBuffer();
@@ -4731,6 +4760,10 @@ export class ChatGptBrowserWorker {
           }
         }
         if (snapshot.responsePresent) consecutiveObservationRebinds = 0;
+        observedNativeToolCallCount = Math.max(
+          observedNativeToolCallCount,
+          snapshot.nativeToolCallCount,
+        );
         // The page was read successfully, so the fault budget is genuinely consecutive even when
         // this iteration goes on to `continue` for a rebind, confirmation, or liveness pause.
         internalObservationFaults = 0;
@@ -4782,6 +4815,7 @@ export class ChatGptBrowserWorker {
             }
           })();
           for (const trace of visibleTrace.observe(snapshot.traceBlocks, snapshot.completionActionVisible)) {
+            if (chatGptReportsUndeliveredNativeTool(trace.text)) nativeDeliveryFailureObserved = true;
             if (trace.kind === "commentary") turn.onCommentary?.(trace.text, trace.continuation === true);
             else turn.onReasoningSummary?.(trace.text, trace.continuation === true);
           }
@@ -4819,6 +4853,22 @@ export class ChatGptBrowserWorker {
                 responseDomCache.snapshot = undefined;
                 await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
                 continue;
+              }
+              if (nativeDeliveryFailureObserved
+                || chatGptReportsUndeliveredNativeTool(snapshot.visibleText)
+                || chatGptHasUndeliveredNativeTool(
+                  observedNativeToolCallCount,
+                  externalProgressSnapshot?.toolCallsStarted ?? 0,
+                )) {
+                throw new ChatGptWebAdapterError(
+                  "ChatGPT did not deliver its Codex Native call to the local tunnel. Retrying the browser turn.",
+                  {
+                    status: 502,
+                    errorType: "connector_error",
+                    code: "connector_tool_delivery_missing",
+                    retryable: true,
+                  },
+                );
               }
               if (!await turn.completionFence.commit(completionFenceRevision)) {
                 completionFenceRevision = undefined;

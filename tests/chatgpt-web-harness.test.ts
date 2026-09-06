@@ -42,6 +42,7 @@ test("current-turn MCP progress tracks active calls without claiming completion"
   expect(await changed).toEqual({
     revision: 1,
     lastToolBatchRevision: 1,
+    toolCallsStarted: 2,
     activeToolCalls: 2,
     lastProgressAt: 1_000,
   });
@@ -55,6 +56,7 @@ test("current-turn MCP progress tracks active calls without claiming completion"
   expect(progress.snapshot()).toEqual({
     revision: 3,
     lastToolBatchRevision: 1,
+    toolCallsStarted: 2,
     activeToolCalls: 0,
     lastProgressAt: 3_000,
   });
@@ -96,6 +98,7 @@ test("retiring current-turn MCP progress atomically clears calls and rejects its
   expect(progress.snapshot()).toEqual({
     revision: 2,
     lastToolBatchRevision: 1,
+    toolCallsStarted: 2,
     activeToolCalls: 0,
     lastProgressAt: 1_000,
   });
@@ -3566,6 +3569,7 @@ test("mirrored turn progress carries daemon MCP activity into the browser helper
   expect(mirror.snapshot()).toEqual({
     revision: 2,
     lastToolBatchRevision: 1,
+    toolCallsStarted: 1,
     activeToolCalls: 0,
     lastProgressAt: 2_000,
   });

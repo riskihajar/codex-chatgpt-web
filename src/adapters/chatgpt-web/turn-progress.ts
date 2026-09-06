@@ -1,6 +1,8 @@
 export interface ChatGptExternalTurnProgressSnapshot {
   revision: number;
   lastToolBatchRevision: number;
+  /** Cumulative calls delivered to the broker; absent only on pre-counter protocol frames. */
+  toolCallsStarted?: number;
   activeToolCalls: number;
   lastProgressAt?: number;
 }
@@ -86,6 +88,7 @@ export class ChatGptExternalTurnProgress extends ChatGptTurnProgressBroadcaster 
   private revision = 0;
   private lastToolBatchRevision = 0;
   private observedToolBatchRevision = 0;
+  private toolCallsStarted = 0;
   private activeToolCalls = 0;
   private lastProgressAt?: number;
   private retirementError?: Error;
@@ -95,6 +98,7 @@ export class ChatGptExternalTurnProgress extends ChatGptTurnProgressBroadcaster 
     return {
       revision: this.revision,
       lastToolBatchRevision: this.lastToolBatchRevision,
+      toolCallsStarted: this.toolCallsStarted,
       activeToolCalls: this.activeToolCalls,
       ...(this.lastProgressAt !== undefined ? { lastProgressAt: this.lastProgressAt } : {}),
     };
@@ -106,6 +110,7 @@ export class ChatGptExternalTurnProgress extends ChatGptTurnProgressBroadcaster 
       throw new Error("ChatGPT external progress requires a non-empty tool batch");
     }
     this.activeToolCalls += count;
+    this.toolCallsStarted += count;
     this.advance(now, "tool_batch");
     return this.lastToolBatchRevision;
   }
@@ -209,6 +214,7 @@ export class ChatGptMirroredTurnProgress extends ChatGptTurnProgressBroadcaster 
   private current: ChatGptExternalTurnProgressSnapshot = {
     revision: 0,
     lastToolBatchRevision: 0,
+    toolCallsStarted: 0,
     activeToolCalls: 0,
   };
   private observedToolBatchRevision = 0;
@@ -242,6 +248,7 @@ export class ChatGptMirroredTurnProgress extends ChatGptTurnProgressBroadcaster 
     // recorder only ever moves these forward, so a regression means a corrupt or forged frame
     // rather than an ordering artefact, and accepting it would desynchronise observed liveness.
     if (next.lastToolBatchRevision < this.current.lastToolBatchRevision
+      || (next.toolCallsStarted ?? 0) < (this.current.toolCallsStarted ?? 0)
       || (next.lastProgressAt === undefined && this.current.lastProgressAt !== undefined)
       || (next.lastProgressAt !== undefined
         && this.current.lastProgressAt !== undefined
@@ -261,6 +268,7 @@ export function assertChatGptTurnProgressSnapshot(
   if (!value
     || !finiteIndex(value.revision)
     || !finiteIndex(value.lastToolBatchRevision)
+    || (value.toolCallsStarted !== undefined && !finiteIndex(value.toolCallsStarted))
     || !finiteIndex(value.activeToolCalls)
     || value.lastToolBatchRevision > value.revision
     || (value.lastProgressAt !== undefined && !Number.isFinite(value.lastProgressAt))
